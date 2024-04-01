@@ -60,15 +60,14 @@ type Raft struct {
 	// volatile state on all servers
 	commitIndex int
 	lastApplied int
-	isLeader bool
+	isLeader    bool
 
 	electionTimeoutVal int
-	lastHeartbeat time.Time
+	lastHeartbeat      time.Time
 
 	// volatile state on leaders
-	nextIndex   []int
-	matchIndex  []int
-
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -88,31 +87,31 @@ func (rf *Raft) GetState() (int, bool) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term int
-	CandidateId	int
+	Term         int
+	CandidateId  int
 	LastLogIndex int
-	LastLogTerm int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term int
+	Term        int
 	VoteGranted bool
 }
 
 type AppendEntriesArgs struct {
-	Term int
-	LeaderId int
+	Term         int
+	LeaderId     int
 	PrevLogIndex int
-	PrevLogTerm int
-	Entries []LogEntry
+	PrevLogTerm  int
+	Entries      []LogEntry
 	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
-	Term int
+	Term    int
 	Success bool
 }
 
@@ -131,7 +130,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 	}
 
-	if args.LastLogIndex >= rf.lastApplied && (rf.votedFor == 0 || rf.votedFor == args.CandidateId) {
+	if args.LastLogIndex >= rf.lastApplied && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
@@ -144,17 +143,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Read the fields in "args",
 	// and accordingly assign the values for fields in "reply".
 
+	print("Recipient: ", rf.me, " Term: ", rf.currentTerm, " received heartbeat from ", args.LeaderId, " Term: ", args.Term, "\n")
+
 	rf.lastHeartbeat = time.Now()
 
-	// if args.Term < rf.currentTerm {
-	// 	reply.Success = false
-	// 	reply.Term = rf.currentTerm // this might be different
-	// }
+	reply.Success = true
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.isLeader = false
+		reply.Success = true
+	}
+
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm // this might be different
+		reply.Success = false
+	}
 
 	return
 }
-
-
 
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
@@ -234,7 +241,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) electionTimeoutChecker(){
+func (rf *Raft) electionTimeoutChecker() {
 	for {
 		// If the server is dead, exit the loop
 		if rf.killed() {
@@ -252,7 +259,7 @@ func (rf *Raft) electionTimeoutChecker(){
 }
 
 func (rf *Raft) startElection() {
-	
+
 	rf.mu.Lock()
 	rf.currentTerm++
 	rf.votedFor = rf.me
@@ -260,12 +267,11 @@ func (rf *Raft) startElection() {
 	rf.electionTimeoutVal = rand.Intn(150) + 150
 	rf.mu.Unlock()
 
-
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
 		LastLogIndex: 0,
-		LastLogTerm: 0,
+		LastLogTerm:  0,
 	}
 
 	if len(rf.log) > 0 {
@@ -279,24 +285,30 @@ func (rf *Raft) startElection() {
 		reply := RequestVoteReply{}
 		if i != rf.me && rf.sendRequestVote(i, &args, &reply) {
 			voteCount++
+			print("Server ", rf.me, " received vote from ", i, "\n")
 		}
 	}
 
+	print("-----------------\n")
 	print("Server ", rf.me, " received ", voteCount, " votes \n")
 
 	if voteCount*2 > len(rf.peers) {
 		rf.isLeader = true
+		print("Server ", rf.me, " is now the leader \n")
 		go rf.startHeartbeat()
+	} else {
+		rf.isLeader = false
+		print("Server ", rf.me, " didn't get enough votes \n")
 	}
 
 }
 
 func (rf *Raft) startHeartbeat() {
-	for{
+	for {
 		if rf.isLeader == false {
-			break
+			return
 		}
-		
+
 		for i := range rf.peers {
 			if i != rf.me {
 				args := AppendEntriesArgs{
@@ -315,14 +327,18 @@ func (rf *Raft) startHeartbeat() {
 
 				reply := AppendEntriesReply{}
 				rf.sendAppendEntries(i, &args, &reply)
+
+				if reply.Success == false {
+					rf.isLeader = false
+					print("Server ", rf.me, " received false from ", i, "\n")
+					return
+				}
 			}
 		}
 
 		time.Sleep(150 * time.Millisecond)
 	}
 }
-
-
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -341,15 +357,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// persistent state on all servers
 	rf.currentTerm = 0
-	rf.votedFor = 0
+	rf.votedFor = -1
 	rf.log = make([]LogEntry, 0)
 
 	// volatile state on all servers
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeoutVal = rand.Intn(501) + 500
+	rf.electionTimeoutVal = rand.Intn(300) + 150
 	rf.lastHeartbeat = time.Now()
-	
+
 	// volatile state on leaders
 	rf.nextIndex = make([]int, 0)
 	rf.matchIndex = make([]int, 0)
