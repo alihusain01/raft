@@ -60,7 +60,7 @@ type Raft struct {
 	// volatile state on all servers
 	commitIndex int
 	lastApplied int
-	isLeader    bool
+	isLeader    int32
 
 	electionTimeoutVal int
 	lastHeartbeat      time.Time
@@ -78,8 +78,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 	term = rf.currentTerm
-	isleader = rf.isLeader
-
+	isleader = atomic.LoadInt32(&rf.isLeader) == 1
 	return term, isleader
 }
 
@@ -124,6 +123,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
+		return
 	}
 
 	if args.Term > rf.currentTerm {
@@ -147,11 +147,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.lastHeartbeat = time.Now()
 
-	reply.Success = true
-
-	if args.Term > rf.currentTerm {
+	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.isLeader = false
+		atomic.StoreInt32(&rf.isLeader, 0)
 		reply.Success = true
 	}
 
@@ -234,6 +232,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	// atomic.StoreInt32(&rf.isLeader, 0)
+	print("Server ", rf.me, " has been killed \n")
 }
 
 func (rf *Raft) killed() bool {
@@ -248,7 +248,7 @@ func (rf *Raft) electionTimeoutChecker() {
 			break
 		}
 
-		if time.Since(rf.lastHeartbeat).Milliseconds() > int64(rf.electionTimeoutVal) && !rf.isLeader {
+		if time.Since(rf.lastHeartbeat).Milliseconds() > int64(rf.electionTimeoutVal) {
 			// Start an election
 			print("Server ", rf.me, " timed out \n")
 			go rf.startElection()
@@ -283,61 +283,126 @@ func (rf *Raft) startElection() {
 
 	for i := range rf.peers {
 		reply := RequestVoteReply{}
+		print("Server ", rf.me, " sending vote request to ", i, "\n")
 		if i != rf.me && rf.sendRequestVote(i, &args, &reply) {
 			voteCount++
 			print("Server ", rf.me, " received vote from ", i, "\n")
+
+			if voteCount*2 > len(rf.peers) {
+				print("-----------------\n")
+				print("Server ", rf.me, " received ", voteCount, " votes \n")
+				atomic.StoreInt32(&rf.isLeader, 1)
+				print("Server ", rf.me, " is now the leader \n")
+				go rf.startHeartbeat()
+				return
+			}
 		}
 	}
 
-	print("-----------------\n")
-	print("Server ", rf.me, " received ", voteCount, " votes \n")
+	atomic.StoreInt32(&rf.isLeader, 0)
+	print("Server ", rf.me, " didn't get enough votes \n")
 
-	if voteCount*2 > len(rf.peers) {
-		rf.isLeader = true
-		print("Server ", rf.me, " is now the leader \n")
-		go rf.startHeartbeat()
-	} else {
-		rf.isLeader = false
-		print("Server ", rf.me, " didn't get enough votes \n")
-	}
+	// if voteCount*2 > len(rf.peers) {
+	// 	atomic.StoreInt32(&rf.isLeader, 1)
+	// 	print("Server ", rf.me, " is now the leader \n")
+	// 	go rf.startHeartbeat()
+	// } else {
+	// 	atomic.StoreInt32(&rf.isLeader, 0)
+	// 	print("Server ", rf.me, " didn't get enough votes \n")
+	// }
 
 }
 
+// func (rf *Raft) startHeartbeat() {
+// 	for {
+// 		if atomic.LoadInt32(&rf.isLeader) == 0 || rf.killed() {
+// 			return
+// 		}
+
+// 		for i := range rf.peers {
+// 			if i != rf.me {
+// 				args := AppendEntriesArgs{
+// 					Term:         rf.currentTerm,
+// 					LeaderId:     rf.me,
+// 					PrevLogIndex: 0,
+// 					PrevLogTerm:  0,
+// 					Entries:      []LogEntry{},
+// 					LeaderCommit: rf.commitIndex,
+// 				}
+
+// 				// if len(rf.log) > 0 {
+// 				// 	args.PrevLogIndex = len(rf.log) - 1
+// 				// 	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+// 				// }
+
+// 				reply := AppendEntriesReply{} // initialize to true. will only be false if another server doesn't recognize this server as the leader
+
+// 				t1 := time.Now()
+// 				ok := rf.sendAppendEntries(i, &args, &reply)
+
+// 				if ok && reply.Success == false {
+// 					atomic.StoreInt32(&rf.isLeader, 0)
+// 					print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
+// 					return
+// 				} else if ok && reply.Success == true {
+// 					print("Server ", rf.me, " received true from ", i, " isLeader: ", rf.isLeader, "\n")
+// 				} else {
+// 					print("Server ", rf.me, " didn't receive a response from ", i, " isLeader: ", rf.isLeader)
+// 					print(". Waited for ", time.Since(t1).Milliseconds(), " milliseconds\n")
+// 				}
+// 			}
+// 		}
+
+// 		time.Sleep(150 * time.Millisecond)
+// 	}
+// }
+
 func (rf *Raft) startHeartbeat() {
-	for {
-		if rf.isLeader == false {
-			return
-		}
+    for {
+        if atomic.LoadInt32(&rf.isLeader) == 0 || rf.killed() {
+            return
+        }
 
-		for i := range rf.peers {
-			if i != rf.me {
-				args := AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: 0,
-					PrevLogTerm:  0,
-					Entries:      []LogEntry{},
-					LeaderCommit: rf.commitIndex,
-				}
+        var wg sync.WaitGroup
 
-				// if len(rf.log) > 0 {
-				// 	args.PrevLogIndex = len(rf.log) - 1
-				// 	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-				// }
+        for i := range rf.peers {
+            if i != rf.me {
+                wg.Add(1)
+                go func(i int) {
+                    defer wg.Done()
 
-				reply := AppendEntriesReply{}
-				rf.sendAppendEntries(i, &args, &reply)
+                    args := AppendEntriesArgs{
+                        Term:         rf.currentTerm,
+                        LeaderId:     rf.me,
+                        PrevLogIndex: 0,
+                        PrevLogTerm:  0,
+                        Entries:      []LogEntry{},
+                        LeaderCommit: rf.commitIndex,
+                    }
 
-				if reply.Success == false {
-					rf.isLeader = false
-					print("Server ", rf.me, " received false from ", i, "\n")
-					return
-				}
-			}
-		}
+                    reply := AppendEntriesReply{}
 
-		time.Sleep(150 * time.Millisecond)
-	}
+                    t1 := time.Now()
+                    ok := rf.sendAppendEntries(i, &args, &reply)
+
+                    if ok && reply.Success == false {
+                        atomic.StoreInt32(&rf.isLeader, 0)
+                        print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
+                        return
+                    } else if ok && reply.Success == true {
+                        print("Server ", rf.me, " received true from ", i, " isLeader: ", rf.isLeader, "\n")
+                    } else {
+                        print("Server ", rf.me, " didn't receive a response from ", i, " isLeader: ", rf.isLeader)
+                        print(". Waited for ", time.Since(t1).Milliseconds(), " milliseconds\n")
+                    }
+                }(i)
+            }
+        }
+
+        wg.Wait()
+
+        time.Sleep(150 * time.Millisecond)
+    }
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -352,6 +417,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf := &Raft{}
 	rf.peers = peers
 	rf.me = me
+	rf.dead = 0
 
 	// Your initialization code here (2A, 2B).
 
@@ -363,12 +429,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// volatile state on all servers
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.electionTimeoutVal = rand.Intn(300) + 150
+	rf.electionTimeoutVal = rand.Intn(500) + 300
 	rf.lastHeartbeat = time.Now()
 
 	// volatile state on leaders
 	rf.nextIndex = make([]int, 0)
 	rf.matchIndex = make([]int, 0)
+	rf.isLeader = 0
 
 	print("Started server ", me, " with election timeout ", rf.electionTimeoutVal, "\n")
 
