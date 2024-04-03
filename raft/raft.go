@@ -17,11 +17,13 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "sync/atomic"
-import "raft/labrpc"
-import "math/rand"
-import "time"
+import (
+	"math/rand"
+	"raft/labrpc"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -56,11 +58,11 @@ type Raft struct {
 	currentTerm int
 	votedFor    int
 	log         []LogEntry
+	role        int32 // 0 - follower, 1 - candidate, 2 - leader
 
 	// volatile state on all servers
 	commitIndex int
 	lastApplied int
-	isLeader    int32
 
 	electionTimeoutVal int
 	lastHeartbeat      time.Time
@@ -77,8 +79,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	rf.mu.Lock()
 	term = rf.currentTerm
-	isleader = atomic.LoadInt32(&rf.isLeader) == 1
+	isleader = rf.role == 2
+	rf.mu.Unlock()
 	return term, isleader
 }
 
@@ -123,15 +127,25 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
+		rf.votedFor = -1
 		return
 	}
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.role = 0
+	}
+
+	if rf.role == 1 {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		rf.votedFor = -1
+		return
 	}
 
 	if args.LastLogIndex >= rf.lastApplied && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
 		reply.VoteGranted = true
+		reply.Term = rf.currentTerm
 		rf.votedFor = args.CandidateId
 	}
 
@@ -149,7 +163,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
-		atomic.StoreInt32(&rf.isLeader, 0)
+		atomic.StoreInt32(&rf.role, 0)
 		reply.Success = true
 	}
 
@@ -252,7 +266,7 @@ func (rf *Raft) electionTimeoutChecker() {
 			// Start an election
 			print("Server ", rf.me, " timed out \n")
 			go rf.startElection()
-			break
+			// break
 		}
 
 	}
@@ -265,6 +279,7 @@ func (rf *Raft) startElection() {
 	rf.votedFor = rf.me
 	rf.lastHeartbeat = time.Now()
 	rf.electionTimeoutVal = rand.Intn(150) + 150
+	rf.role = 1
 	rf.mu.Unlock()
 
 	args := RequestVoteArgs{
@@ -283,7 +298,9 @@ func (rf *Raft) startElection() {
 
 	for i := range rf.peers {
 		reply := RequestVoteReply{}
-		print("Server ", rf.me, " sending vote request to ", i, "\n")
+		if i != rf.me {
+			print("Server ", rf.me, " sending vote request to ", i, "\n")
+		}
 		if i != rf.me && rf.sendRequestVote(i, &args, &reply) {
 			voteCount++
 			print("Server ", rf.me, " received vote from ", i, "\n")
@@ -291,7 +308,7 @@ func (rf *Raft) startElection() {
 			if voteCount*2 > len(rf.peers) {
 				print("-----------------\n")
 				print("Server ", rf.me, " received ", voteCount, " votes \n")
-				atomic.StoreInt32(&rf.isLeader, 1)
+				atomic.StoreInt32(&rf.role, 2)
 				print("Server ", rf.me, " is now the leader \n")
 				go rf.startHeartbeat()
 				return
@@ -299,7 +316,7 @@ func (rf *Raft) startElection() {
 		}
 	}
 
-	atomic.StoreInt32(&rf.isLeader, 0)
+	atomic.StoreInt32(&rf.role, 0)
 	print("Server ", rf.me, " didn't get enough votes \n")
 
 	// if voteCount*2 > len(rf.peers) {
@@ -313,96 +330,49 @@ func (rf *Raft) startElection() {
 
 }
 
-// func (rf *Raft) startHeartbeat() {
-// 	for {
-// 		if atomic.LoadInt32(&rf.isLeader) == 0 || rf.killed() {
-// 			return
-// 		}
-
-// 		for i := range rf.peers {
-// 			if i != rf.me {
-// 				args := AppendEntriesArgs{
-// 					Term:         rf.currentTerm,
-// 					LeaderId:     rf.me,
-// 					PrevLogIndex: 0,
-// 					PrevLogTerm:  0,
-// 					Entries:      []LogEntry{},
-// 					LeaderCommit: rf.commitIndex,
-// 				}
-
-// 				// if len(rf.log) > 0 {
-// 				// 	args.PrevLogIndex = len(rf.log) - 1
-// 				// 	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-// 				// }
-
-// 				reply := AppendEntriesReply{} // initialize to true. will only be false if another server doesn't recognize this server as the leader
-
-// 				t1 := time.Now()
-// 				ok := rf.sendAppendEntries(i, &args, &reply)
-
-// 				if ok && reply.Success == false {
-// 					atomic.StoreInt32(&rf.isLeader, 0)
-// 					print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
-// 					return
-// 				} else if ok && reply.Success == true {
-// 					print("Server ", rf.me, " received true from ", i, " isLeader: ", rf.isLeader, "\n")
-// 				} else {
-// 					print("Server ", rf.me, " didn't receive a response from ", i, " isLeader: ", rf.isLeader)
-// 					print(". Waited for ", time.Since(t1).Milliseconds(), " milliseconds\n")
-// 				}
-// 			}
-// 		}
-
-// 		time.Sleep(150 * time.Millisecond)
-// 	}
-// }
-
 func (rf *Raft) startHeartbeat() {
-    for {
-        if atomic.LoadInt32(&rf.isLeader) == 0 || rf.killed() {
-            return
-        }
+	for {
+		if atomic.LoadInt32(&rf.role) != 2 || rf.killed() {
+			return
+		}
 
-        var wg sync.WaitGroup
+		for i := range rf.peers {
+			if i != rf.me {
+				args := AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: 0,
+					PrevLogTerm:  0,
+					Entries:      []LogEntry{},
+					LeaderCommit: rf.commitIndex,
+				}
 
-        for i := range rf.peers {
-            if i != rf.me {
-                wg.Add(1)
-                go func(i int) {
-                    defer wg.Done()
+				// if len(rf.log) > 0 {
+				// 	args.PrevLogIndex = len(rf.log) - 1
+				// 	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+				// }
 
-                    args := AppendEntriesArgs{
-                        Term:         rf.currentTerm,
-                        LeaderId:     rf.me,
-                        PrevLogIndex: 0,
-                        PrevLogTerm:  0,
-                        Entries:      []LogEntry{},
-                        LeaderCommit: rf.commitIndex,
-                    }
+				reply := AppendEntriesReply{} // initialize to true. will only be false if another server doesn't recognize this server as the leader
 
-                    reply := AppendEntriesReply{}
+				t1 := time.Now()
+				print("Server ", rf.me, " sending heartbeat to ", i, "\n")
+				ok := rf.sendAppendEntries(i, &args, &reply)
 
-                    t1 := time.Now()
-                    ok := rf.sendAppendEntries(i, &args, &reply)
+				if ok && reply.Success == false {
+					atomic.StoreInt32(&rf.role, 0)
+					print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
+					return
+				} else if ok && reply.Success == true {
+					print("Server ", rf.me, " received true from ", i, " role: ", atomic.LoadInt32(&rf.role), "\n")
+				} else {
+					print("Server ", rf.me, " didn't receive a response from ", i, " role: ", atomic.LoadInt32(&rf.role), "\n")
+					print(". Waited for ", time.Since(t1).Milliseconds(), " milliseconds\n")
+				}
+			}
+		}
 
-                    if ok && reply.Success == false {
-                        atomic.StoreInt32(&rf.isLeader, 0)
-                        print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
-                        return
-                    } else if ok && reply.Success == true {
-                        print("Server ", rf.me, " received true from ", i, " isLeader: ", rf.isLeader, "\n")
-                    } else {
-                        print("Server ", rf.me, " didn't receive a response from ", i, " isLeader: ", rf.isLeader)
-                        print(". Waited for ", time.Since(t1).Milliseconds(), " milliseconds\n")
-                    }
-                }(i)
-            }
-        }
-
-        wg.Wait()
-
-        time.Sleep(150 * time.Millisecond)
-    }
+		time.Sleep(150 * time.Millisecond)
+	}
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -425,6 +395,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 0)
+	rf.role = 0
 
 	// volatile state on all servers
 	rf.commitIndex = 0
@@ -435,7 +406,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// volatile state on leaders
 	rf.nextIndex = make([]int, 0)
 	rf.matchIndex = make([]int, 0)
-	rf.isLeader = 0
 
 	print("Started server ", me, " with election timeout ", rf.electionTimeoutVal, "\n")
 
