@@ -29,8 +29,16 @@ voteCount := 1
 	for{
 		vote := <-votesChannel
 		voteCount++
-		
-		
+		if vote == true{
+			grantedCount++
+		}
+		if voteCount == len(rf.peers) || grantedCount*2 > len(rf.peers) || voteCount - grantedCount > len(rf.peers)/2{
+			break
+		}
+	}
+
+	if grantedCount <= len(rf.peers) / 2 {
+		rf.changeRole(FOLLOWER)
 	}
 
 
