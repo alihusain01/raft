@@ -1,0 +1,74 @@
+voteCount := 1
+	grantedCount := 1
+
+	votesChannel := make(chan bool, len(rf.peers))
+
+	for i := range rf.peers {
+		rf.lastHeartbeat = time.Now()
+
+		if i == rf.me {
+			continue
+		}else{
+			go func(votesChannel chan bool, index int){
+				reply := RequestVoteReply{}
+				rf.sendRequestVote(index, &args, &reply)
+				votesChannel <- reply.VoteGranted
+				if reply.Term > args.Term {
+					rf.mu.Lock()
+					if rf.currentTerm < reply.Term {
+						rf.currentTerm = reply.Term
+						rf.role = 0
+						rf.lastHeartbeat = time.Now()
+					}
+					rf.mu.Unlock()
+				}
+			}(votesChannel, i)
+		}		
+	}
+
+	for{
+		vote := <-votesChannel
+		voteCount++
+		
+		
+	}
+
+
+    OUR CODE: 
+
+    // votesChannel := make(chan bool, len(rf.peers))
+
+	// Send vote reqquests to all servers
+	for i := range rf.peers {
+		reply := RequestVoteReply{}
+		rf.lastHeartbeat = time.Now()
+
+		if i != rf.me {
+			print("Server ", rf.me, " sending vote request to ", i, "\n")
+		}
+
+		if i != rf.me && rf.sendRequestVote(i, &args, &reply) {
+			voteCount++
+			print("Server ", rf.me, " received vote from ", i, "\n")
+		}
+
+	}
+
+	// Check if the server has received enough votes to become the leader
+	if voteCount*2 > len(rf.peers) {
+		print("-----------------\n")
+		print("Server ", rf.me, " received ", voteCount, " votes \n")
+		rf.mu.Lock()
+		if rf.currentTerm == args.Term && rf.role == 1 {
+			rf.role = 2
+			rf.mu.Unlock()
+			print("Server ", rf.me, " is now the leader for term: ", rf.currentTerm, " \n")
+			rf.startHeartbeat()
+			return
+		}
+	}
+
+	atomic.StoreInt32(&rf.role, 0)
+	rf.lastHeartbeat = time.Now()
+
+	print("Server ", rf.me, " didn't get enough votes \n")
