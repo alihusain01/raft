@@ -375,6 +375,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	if rf.currentTerm == args.Term && atomic.LoadInt32(&rf.role) == 1 {
 		rf.changeRole(LEADER)
+		go rf.startHeartbeat()
 	}
 	rf.mu.Unlock()
 
