@@ -240,11 +240,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	index := rf.lastApplied
+	term := rf.currentTerm
+	isLeader := rf.role == LEADER
 
 	// Your code here (2B).
+	if isLeader {
+		rf.log = append(rf.log, LogEntry{
+			Term:    rf.currentTerm,
+			Command: command,
+		})
+		rf.matchIndex[rf.me] = index
+	}
+	rf.mu.Unlock()
+
 
 	return index, term, isLeader
 }
@@ -295,7 +304,7 @@ func (rf *Raft) electionTimeoutChecker() {
 
 		timeSince := time.Since(rf.lastHeartbeat).Milliseconds()
 
-		if timeSince > int64(rf.electionTimeoutVal) && atomic.LoadInt32(&rf.role) != 2 || atomic.LoadInt32(&rf.role) == 1{
+		if timeSince > int64(rf.electionTimeoutVal) && atomic.LoadInt32(&rf.role) != 2 || atomic.LoadInt32(&rf.role) == 1 {
 			// Start an election
 			print("Server ", rf.me, " timed out. Time since: ", timeSince, ". Election timeout: ", rf.electionTimeoutVal, "\n")
 			rf.startElection()
@@ -339,8 +348,8 @@ func (rf *Raft) startElection() {
 
 		if i == rf.me {
 			continue
-		}else{
-			go func(votesChannel chan bool, index int){
+		} else {
+			go func(votesChannel chan bool, index int) {
 				reply := RequestVoteReply{}
 				rf.sendRequestVote(index, &args, &reply)
 				votesChannel <- reply.VoteGranted
@@ -354,27 +363,30 @@ func (rf *Raft) startElection() {
 					rf.mu.Unlock()
 				}
 			}(votesChannel, i)
-		}		
+		}
 	}
 
-	for{
+	for {
 		vote := <-votesChannel
 		voteCount++
-		if vote == true{
+		if vote == true {
 			grantedCount++
 		}
-		if voteCount == len(rf.peers) || grantedCount*2 > len(rf.peers) || voteCount - grantedCount > len(rf.peers)/2{
+		if voteCount == len(rf.peers) || grantedCount*2 > len(rf.peers) || voteCount-grantedCount > len(rf.peers)/2 {
 			break
 		}
 	}
 
-	if grantedCount <= len(rf.peers) / 2 {
+	if grantedCount <= len(rf.peers)/2 {
 		return
 	}
 
 	rf.mu.Lock()
 	if rf.currentTerm == args.Term && atomic.LoadInt32(&rf.role) == 1 {
 		rf.changeRole(LEADER)
+	}
+
+	if atomic.LoadInt32(&rf.role) == 2 {
 		go rf.startHeartbeat()
 	}
 	rf.mu.Unlock()
@@ -405,7 +417,7 @@ func (rf *Raft) startHeartbeat() {
 				continue
 			}
 
-			go func(i int){
+			go func(i int) {
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
