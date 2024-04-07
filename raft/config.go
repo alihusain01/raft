@@ -316,13 +316,18 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 	count := 0
 	var cmd interface{} = nil
 	for i := 0; i < len(cfg.rafts); i++ {
+		// print("LENGTH:", len(cfg.rafts), "\n")
+		// print("bp0\n")
 		if cfg.applyErr[i] != "" {
 			cfg.t.Fatal(cfg.applyErr[i])
 		}
 
+		// print("bp1\n")
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
+
+		// print("ok: ", ok, "\n")
 
 		if ok {
 			if count > 0 && cmd != cmd1 {
@@ -333,6 +338,8 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 			cmd = cmd1
 		}
 	}
+
+	print("count: ", count, " cmd: ", cmd, "\n")
 	return count, cmd
 }
 
