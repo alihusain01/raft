@@ -606,8 +606,9 @@ func (rf *Raft) startElection() {
 
 func (rf *Raft) startHeartbeat() {
 	for {
+		print("I am ", rf.me, ". My role is ", rf.role, "\n")
 		if atomic.LoadInt32(&rf.role) == FOLLOWER || rf.killed() {
-			print("Killing startHeartbeat() \n")
+			print("My role is ", rf.role, "\n")
 			return
 		}
 
@@ -640,8 +641,8 @@ func (rf *Raft) startHeartbeat() {
 
 				if ok && !reply.Success {
 					print("Server ", rf.me, " Role: ", rf.role, " received false from ", i, " and is no longer the leader \n")
-					rf.changeRole(FOLLOWER)
 					// print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
+					// rf.changeRole(FOLLOWER)
 					return
 				}
 			}(i)
