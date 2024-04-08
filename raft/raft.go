@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -63,12 +64,12 @@ type Raft struct {
 	// You may also need to add other state, as per your implementation.
 
 	// Persistent state on all servers
-	currentTerm int
-	votedFor    int
-	log         []LogEntry
-	role        int32 // 0 - follower, 1 - candidate, 2 - leader
-	applyCh     chan ApplyMsg
-	notifyApplyCh       chan struct{}
+	currentTerm   int
+	votedFor      int
+	log           []LogEntry
+	role          int32 // 0 - follower, 1 - candidate, 2 - leader
+	applyCh       chan ApplyMsg
+	notifyApplyCh chan struct{}
 
 	// volatile state on all servers
 	commitIndex int
@@ -140,31 +141,45 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	rf.lastElectionHeartbeat = time.Now()
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 
 	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
+		print("false vote reason: 0 \n")
 		return
+	}
+
+	if args.Term == rf.currentTerm {
+		if rf.votedFor == args.CandidateId {
+			reply.VoteGranted = true
+			return
+		}
+		if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+			print("false vote reason: 1 \n")
+			return
+		}
 	}
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
-		rf.role = 0
+		print("Server: ", rf.me, " changing to follower in request vote \n")
+		rf.changeRole(FOLLOWER)
 	}
 
-	if rf.role == 1 {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-		rf.votedFor = -1
+	lastLogTerm := rf.log[len(rf.log)-1].Term
+	lastLogIndex := len(rf.log) - 1
+
+	if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
+		print("false vote reason: 2 \n")
 		return
 	}
 
-	if args.LastLogIndex >= rf.lastApplied && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
-		reply.VoteGranted = true
-		reply.Term = rf.currentTerm
-		rf.votedFor = args.CandidateId
-	}
+	rf.currentTerm = args.Term
+	rf.votedFor = args.CandidateId
+	reply.VoteGranted = true
+	rf.changeRole(FOLLOWER)
+	rf.lastElectionHeartbeat = time.Now()
 
 	return
 
@@ -208,22 +223,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// print("Recipient: ", rf.me, " Term: ", rf.currentTerm, " received heartbeat from ", args.LeaderId, " Term: ", args.Term, "\n")
 	rf.lastElectionHeartbeat = time.Now()
 
-	if args.Term > rf.currentTerm {
+	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
-		print("Changing to folower in append entries \n")
+		// print("Changing to folower in append entries \n")
 		rf.changeRole(FOLLOWER)
 	}
 
 	lastLogIndex := len(rf.log) - 1
 
 	if args.PrevLogIndex > lastLogIndex { // leader has a larger log
+		print("BP0 \n")
 		reply.Success = false
 		reply.NextIndex = lastLogIndex + 1
-	} else if rf.log[args.PrevLogIndex].Term == args.PrevLogTerm { 
+	} else if rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
+		// print("BP1 \n")
 		reply.Success = true
 		rf.log = append(rf.log[0:args.PrevLogIndex+1], args.Entries...)
 		reply.NextIndex = lastLogIndex + 1
 	} else {
+		print("BP2 \n")
 		reply.Success = false
 		term := rf.log[args.PrevLogIndex].Term
 		idx := args.PrevLogIndex
@@ -353,6 +371,7 @@ func (rf *Raft) appendPeerEntries(peerIndex int) {
 		if reply.NextIndex > 0 {
 			rf.nextIndex[peerIndex] = reply.NextIndex
 		}
+
 		rf.mu.Unlock()
 	}
 }
@@ -363,7 +382,9 @@ func (rf *Raft) startApplyLogs() {
 	if rf.commitIndex <= rf.lastApplied {
 		msgs = make([]ApplyMsg, 0)
 	} else {
+		print("rf.lastApplied + 1: ", rf.lastApplied+1, " rf.commitIndex: ", rf.commitIndex, "\n")
 		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
+		
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			msgs = append(msgs, ApplyMsg{
 				CommandValid: true,
@@ -441,21 +462,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// print("index: ", index, "\n")
 
 	// If not a leader return instantly
-	if !isLeader {
-		rf.mu.Unlock()
-		return 0, 0, false
-	}
+	if isLeader {
 
-	// Your code here (2B).
-	logEntry := LogEntry{
-		Term:    term,
-		Command: command,
+		// Your code here (2B).
+		logEntry := LogEntry{
+			Term:    term,
+			Command: command,
+		}
+		rf.log = append(rf.log, logEntry)
+		rf.matchIndex[rf.me] = index
 	}
-	rf.log = append(rf.log, logEntry)
-	rf.matchIndex[rf.me] = index
+	
 
 	rf.mu.Unlock()
-
 	return index, term, isLeader
 }
 
@@ -489,9 +508,10 @@ func (rf *Raft) changeRole(role int32) {
 
 	switch role {
 	case FOLLOWER:
-		print("Server ", rf.me, " is now a follower\n")
+		// print("Server ", rf.me, " is now a follower\n")
 	case CANDIDATE:
-		print("Server ", rf.me, " is now a candidate\n")
+		rf.votedFor = rf.me
+		print("Server ", rf.me, " is now a candidate for term ", rf.currentTerm, "\n")
 	case LEADER:
 		lastLogIndex := len(rf.log) - 1
 		for i := range rf.peers {
@@ -518,7 +538,7 @@ func (rf *Raft) electionTimeoutChecker() {
 
 		if timeSince > int64(rf.electionTimeoutVal) && atomic.LoadInt32(&rf.role) != 2 || atomic.LoadInt32(&rf.role) == 1 {
 			// Start an election
-			print("Server ", rf.me, " timed out. Time since: ", timeSince, ". Election timeout: ", rf.electionTimeoutVal, "\n")
+			print("Server ", rf.me, " timed out. Role: ", rf.role, " Time since: ", timeSince, ". Election timeout: ", rf.electionTimeoutVal, "\n")
 			rf.startElection()
 			// break
 		}
@@ -534,7 +554,7 @@ func (rf *Raft) startElection() {
 	rf.votedFor = rf.me
 	rf.lastElectionHeartbeat = time.Now()
 	// rf.electionTimeoutVal = rand.Intn(150) + 150
-	rf.role = 1
+	rf.changeRole(CANDIDATE)
 
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -557,19 +577,23 @@ func (rf *Raft) startElection() {
 
 	for i := range rf.peers {
 		rf.lastElectionHeartbeat = time.Now()
+		print("rf.me: ", rf.me, "\n")
+		print("i: ", i, "\n")
 
 		if i == rf.me {
 			continue
 		} else {
-			go func(votesChannel chan bool, index int) {
+			go func(ch chan bool, index int) {
+				print("Server ", rf.me, " Role: ", rf.role, " sending vote request to server ", index, " for term ", rf.currentTerm, "\n")
 				reply := RequestVoteReply{}
 				rf.sendRequestVote(index, &args, &reply)
-				votesChannel <- reply.VoteGranted
+				print("Server ", rf.me, " Role: ", rf.role, " received vote from server ", index, " granted: ", reply.VoteGranted, " Term: ", reply.Term, "\n")
+				ch <- reply.VoteGranted
 				if reply.Term > args.Term {
 					rf.mu.Lock()
 					if rf.currentTerm < reply.Term {
 						rf.currentTerm = reply.Term
-						rf.role = 0
+						rf.changeRole(FOLLOWER)
 						rf.lastElectionHeartbeat = time.Now()
 					}
 					rf.mu.Unlock()
@@ -580,7 +604,7 @@ func (rf *Raft) startElection() {
 
 	for {
 		vote := <-votesChannel
-		voteCount++
+		voteCount += 1
 		if vote {
 			grantedCount++
 		}
@@ -594,7 +618,7 @@ func (rf *Raft) startElection() {
 	}
 
 	rf.mu.Lock()
-	if rf.currentTerm == args.Term && rf.role == 1 {
+	if rf.currentTerm == args.Term && rf.role == CANDIDATE {
 		rf.changeRole(LEADER)
 	}
 	rf.mu.Unlock()
@@ -608,13 +632,14 @@ func (rf *Raft) startHeartbeat() {
 	for {
 		print("I am ", rf.me, ". My role is ", rf.role, "\n")
 		if atomic.LoadInt32(&rf.role) == FOLLOWER || rf.killed() {
-			print("My role is ", rf.role, "\n")
+			print("Server: ", rf.me, " Role: ", rf.role, " Killing startHeartbeat \n")
 			return
 		}
 
 		for i := range rf.peers {
 			// rf.lastElectionHeartbeat = time.Now()
 			if i == rf.me {
+				rf.lastElectionHeartbeat = time.Now()
 				continue
 			}
 
@@ -628,6 +653,9 @@ func (rf *Raft) startHeartbeat() {
 					LeaderCommit: rf.commitIndex,
 				}
 
+				byte_count := unsafe.Sizeof(args)
+				print("Byte count: ", byte_count, "\n")
+
 				if len(rf.log) > 0 {
 					args.PrevLogIndex = len(rf.log) - 1
 					args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
@@ -635,16 +663,15 @@ func (rf *Raft) startHeartbeat() {
 
 				reply := AppendEntriesReply{} // initialize to true. will only be false if another server doesn't recognize this server as the leader
 
-				// t1 := time.Now()
-				// print("Server ", rf.me, " Role: ", rf.role, " sending heartbeat to ", i, "\n")
-				ok := rf.sendAppendEntries(i, &args, &reply)
+				print("Server ", rf.me, " Role: ", rf.role, " sending heartbeat to ", i, "\n")
+				rf.sendAppendEntries(i, &args, &reply)
 
-				if ok && !reply.Success {
-					print("Server ", rf.me, " Role: ", rf.role, " received false from ", i, " and is no longer the leader \n")
-					// print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
-					// rf.changeRole(FOLLOWER)
-					return
-				}
+				// if ok && !reply.Success {
+				// 	print("Server ", rf.me, " Role: ", rf.role, " received false from ", i, " and is no longer the leader \n")
+				// 	rf.changeRole(FOLLOWER)
+				// 	// print("Server ", rf.me, " received false from ", i, " and is no longer the leader\n")
+				// 	return
+				// }
 			}(i)
 		}
 
@@ -677,8 +704,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.notifyApplyCh = make(chan struct{}, 100)
 
 	// volatile state on all servers
-	rf.commitIndex = 0
-	rf.electionTimeoutVal = rand.Intn(100) + 200
+	rf.electionTimeoutVal = rand.Intn(350) + 200
 	rf.appendEntryHeartbeats = make([]time.Time, len(rf.peers))
 
 	// rf.electionTimeoutVal = rand.Intn(500) + 300
@@ -689,6 +715,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	print("Started server ", me, " with election timeout ", rf.electionTimeoutVal, "\n")
+
+	go rf.electionTimeoutChecker()
 
 	go func() {
 		for {
@@ -711,8 +739,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 		}(i)
 	}
-
-	go rf.electionTimeoutChecker()
 
 	return rf
 }
