@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -158,8 +159,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			return
 		}
 	}
-		
-	
+
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
@@ -167,9 +167,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.changeRole(FOLLOWER)
 	}
 
-	lastLogTerm := rf.log[len(rf.log) - 1].Term
+	lastLogTerm := rf.log[len(rf.log)-1].Term
 	lastLogIndex := len(rf.log) - 1
-
 
 	if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
 		print("false vote reason: 2 \n")
@@ -372,6 +371,7 @@ func (rf *Raft) appendPeerEntries(peerIndex int) {
 		if reply.NextIndex > 0 {
 			rf.nextIndex[peerIndex] = reply.NextIndex
 		}
+
 		rf.mu.Unlock()
 	}
 }
@@ -384,6 +384,7 @@ func (rf *Raft) startApplyLogs() {
 	} else {
 		print("rf.lastApplied + 1: ", rf.lastApplied+1, " rf.commitIndex: ", rf.commitIndex, "\n")
 		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
+		
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			msgs = append(msgs, ApplyMsg{
 				CommandValid: true,
@@ -471,6 +472,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, logEntry)
 		rf.matchIndex[rf.me] = index
 	}
+	
 
 	rf.mu.Unlock()
 	return index, term, isLeader
@@ -575,8 +577,8 @@ func (rf *Raft) startElection() {
 
 	for i := range rf.peers {
 		rf.lastElectionHeartbeat = time.Now()
-		print("rf.me: ", rf.me ,"\n")
-		print("i: ", i ,"\n")
+		print("rf.me: ", rf.me, "\n")
+		print("i: ", i, "\n")
 
 		if i == rf.me {
 			continue
@@ -650,6 +652,9 @@ func (rf *Raft) startHeartbeat() {
 					LeaderCommit: rf.commitIndex,
 				}
 
+				byte_count := unsafe.Sizeof(args)
+				print("Byte count: ", byte_count, "\n")
+
 				if len(rf.log) > 0 {
 					args.PrevLogIndex = len(rf.log) - 1
 					args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
@@ -709,9 +714,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	print("Started server ", me, " with election timeout ", rf.electionTimeoutVal, "\n")
-	
+
 	go rf.electionTimeoutChecker()
-	
+
 	go func() {
 		for {
 			select {
@@ -733,7 +738,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 		}(i)
 	}
-
 
 	return rf
 }
