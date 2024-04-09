@@ -339,7 +339,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 		}
 	}
 
-	print("count: ", count, " cmd: ", cmd, "\n")
+	// print("count: ", count, " cmd: ", cmd, "\n")
 	return count, cmd
 }
 
