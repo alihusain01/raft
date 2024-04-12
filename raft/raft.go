@@ -379,7 +379,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				if rf.killed() {
 					return
 				}
-				go rf.startApplyLogs()
+				go rf.logReplication()
 				time.Sleep(10 * time.Millisecond)
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -657,7 +657,7 @@ func (rf *Raft) appendToPeers(peer int) {
 	}
 }
 
-func (rf *Raft) startApplyLogs() {
+func (rf *Raft) logReplication() {
 	if rf.killed() {
 		return
 	}
